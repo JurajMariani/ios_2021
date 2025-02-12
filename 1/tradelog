@@ -1,0 +1,1148 @@
+#!/usr/bin/env bash
+export POSIXLY_CORRECT=yes;
+
+#---------------------------------------------------------------------
+#		@AUTHOR:	JURAJ MARIANI
+#		<email>:	xmaria03@stud.fit.vutbr.cz
+#
+#		structure:	 FUNCTIONS
+#				------------
+#				CODE SEGMENT
+#				------------
+#				 FUNCTIONS
+#				------------
+#				CODE SEGMENT
+#
+#		purpose:	- This is a uni project aimed to learn the basics of shell language
+#				- Implement functions over a stock exchange log output
+#		
+#		instructions:	'./tradelog -h' or './tradelog --help'
+#---------------------------------------------------------------------
+
+print_help(){
+	echo "This software is used to implement basic functions over a stock exchange log file/s"
+	echo "-----------------------------------------------------------------------------------"
+	echo "The arguments are devided into three categories:"
+	echo "[COMMAND]:"
+	echo -e "\t- 'list-tick' - lists all ticker identifiers"
+	echo -e "\t- 'profit' - outputs the overall profit (rounded to 2 decimal points)"
+	echo -e "\t- 'pos' - outputs the values of held positions sorted by value"
+	echo -e "\t- 'last-price' - outputs the last known price of every ticker present"
+	echo -e "\t- 'hist-ord' - draws histogram of the performed transactions for each TICKER"
+	echo -e "\t- 'graph-pos' - draws a graph of currently held positions for each TICKER"
+	echo "[FILTER]:"
+	echo -e "\t[COMMAND] is going to be executed only if:"
+	echo -e "\t- '-a DATE TIME' - the DATE TIME on the line is AFTER the DATE TIME of the filter parameter"
+	echo -e "\t- '-b DATE TIME' - the DATE TIME on the line is BEFORE the DATE TIME of the filter parameter"
+	echo -e "\t- '-t TICKER' - the TICKER on the line matches the TICKER of the filter parameter"
+	echo -e "\tDEVIATION:\n\t- '-w WIDTH' - defines the maximal width of the longest element of the graph"
+	echo "[HELP]:"
+	echo -e "\t '-h', '--help'"
+	echo "Template:"
+	echo -e "\ttradelog [-h|--help] [FILTER] [COMMAND] [LOG1] [LOG2] [...]"
+}
+
+
+# FUNCTION 'find_in_array()'
+# receives:
+#	find_in_array "ARRAY" "FIND"
+## *'FIND' being a string which we are looking for*
+#
+# returns:
+#	if (found)
+#		return position_of_find
+#	else
+#
+find_in_array(){
+
+	local params="$@"
+
+	declare -a src=($params)
+	
+	local fnd=${src[${#src[@]}-1]}
+
+	unset 'src[ ${#src[@]}-1 ]'
+
+	local temp=${#src[@]}
+	temp=$((temp-1))
+
+	local x=0
+	for x in $(seq 0 $temp)
+	do
+		if [ ${src[$x]} == $fnd ]
+		then
+			echo $x
+			return
+		fi
+	done
+
+	echo -1
+}
+
+
+# FUNCTION 'exe_help()'
+# looks for '-h' and '--help'
+# args, if at least one is
+# present, prints help message
+# and exits the script
+exe_help(){
+
+	local res1=$( find_in_array "$@" "-h" )
+	local res2=$( find_in_array "$@" "--help" )
+
+	if [ $res1 -ge 0 ] || [ $res2 -ge 0 ]
+	then
+		print_help
+		exit 0
+	fi
+
+}
+
+
+# --------------------------------------------------------------
+## 		   *THE START OF THE SCRIPT*
+# --------------------------------------------------------------
+
+
+temp_func_out=0
+com_cnt=0
+logfiles=()
+comm=0
+filter=()
+fil_cnt=0
+help_cnt=0
+
+arguments="$@"
+declare -a arguments=(${arguments[@]})
+
+exe_help "${arguments[@]}"
+
+end=${#arguments[@]}
+
+for ((i=0 ; i < end ; i++))
+do
+	case ${arguments[$i]} in
+		# looking for commands
+		list-tick | profit | pos | last-price | hist-ord | graph-pos)
+			com_cnt=$((com_cnt+1))
+			
+			if [ $com_cnt -gt 1 ]
+			then
+				echo "Too many [COMMAND]s, maximum = 1."
+				exit 2
+			fi
+			
+			comm=${arguments[$i]}
+
+			;;
+		# looking for filters
+		-a | -b | -t | -w)
+			filter+=( "${arguments[$i]}" )
+
+			if [ ${arguments[$i]} == "-a" ] || [ ${arguments[$i]} == "-b" ]
+			then
+				filter+=( "${arguments[$i+1]}" )
+				filter+=( "${arguments[$i+2]}" )
+				i=$((i+2))
+			else
+				filter+=( "${arguments[$i+1]}" )
+				i=$((i+1))
+			fi
+
+			;;
+		# other arguments like xxx.log, xxx.log.gz or other designated for skip ...
+		*)
+			if [[ ${arguments[$i]} =~ ^.+\.log(\.gz)?$ ]]
+			then
+				logfiles+=( "${arguments[$i]}" )
+				continue
+			else
+				echo "Unknown command '${arguments[$i]}'. Use -h or --help for more information."
+				exit 1
+			fi
+			;;
+	esac
+done
+
+## ___________________________________________
+## **FUNCTION AREA FOR THE NEXT CODE SEGMENT**
+## -------------------------------------------
+
+
+# FUNCTION 'get_date_time()'
+# recieves string
+# divides it first by '-' [:dash:]
+## in order to get the DATE in an array
+## **date is implicitly separated by '-' ... 2021-03-16 ...**
+# next it divides the same string by ':' [:colon:]
+## in order to get the TIME in an array
+## **time is implicitly separated by ':' ... 23:51:49;...**
+get_date_time(){
+	
+	local old_IFS="$IFS"
+	local line_DT=$@
+	
+	IFS='-'
+	declare -a line_date=($line_DT)
+	IFS=' '
+	declare -a line_day_fix=(${line_date[2]})
+	line_date[2]=${line_day_fix[0]}
+	
+	IFS=':'
+	declare -a line_time=($line_DT)
+	IFS=' '
+
+	declare -a line_hr_fix=(${line_time[0]})
+
+	line_time[0]=${line_hr_fix[1]}
+
+	IFS="$old_IFS"
+
+	local out=()
+	out=${line_date[@]}
+	out+=( "${line_time[0]}" )
+	out+=( "${line_time[1]}" )
+	out+=( "${line_time[2]}" )
+
+	echo ${out[@]}
+}
+
+# FUNCTION 'cmp()'
+# a function that compares 2 variables ... [YYYY,MM,DD,HH,MINMIN,SS]
+# returns 1 if first is later than second
+# returns 0 if both atr equal
+# returns -1 if first is earlier than second
+#
+# first = line
+# second = argument/parameter
+cmp(){
+
+	local ln=()
+	local prm=()
+
+	local ctrl=0
+	for i in $@
+	do
+
+		if [ $ctrl -lt 6 ]
+		then
+			ln+=($i)
+		else
+			prm+=($i)
+		fi
+		ctrl=$((ctrl+1))
+
+	done
+
+	for i in {0..5}
+	do
+		if [ ${ln[$i]} -gt ${prm[$i]} ]
+		then
+			echo 1
+			return
+		else
+			if [ ${ln[$i]} -eq ${prm[$i]} ]
+			then
+				continue
+			else
+				echo -1
+				return
+			fi
+		fi
+	done
+
+	echo 0
+
+}
+
+
+# FUNCTION 'get_t_params()'
+# receives an array of FILTERS
+# outputs an array of '-t *_______* <-between asterisks'
+get_t_params(){
+
+	local fters="$@"
+	declare -a filters=($fters)
+	local out=()
+	local x=0
+
+	local temp=$((${#filters[@]}-1))
+
+	for x in $(seq 0 $temp)
+	do
+		if [ ${filters[$x]} == "-t" ]
+		then
+			out+=("${filters[$x+1]}")
+			x=$((x+1))
+		fi
+	done
+
+	echo ${out[@]}
+
+}
+
+
+# FUNCTION 'max_len()'
+# finds the longest element
+# of given array
+# returns the length
+max_len(){
+
+	local max_len=0
+
+	for element in "$@"
+	do
+		if [ ${#element} -gt $max_len ]
+		then
+			max_len=${#element}
+		fi
+	done
+
+	echo $max_len
+
+}
+
+
+# FUNCTION 'max_len_idx()'
+# the same as 'max_len()'
+# but instead of the length
+# it outputs the index of the
+# longest element
+max_len_idx(){
+
+	local max_idx=0
+	local all=$@
+
+	declare -a all_val=($all)
+
+	local stp=$((${#all_val[@]}-1))
+
+	for element in $(seq 1 $stp)
+	do
+		local act_element=${all_val[$element]}
+		local max_element=${all_val[$max_idx]}
+
+		local try_max=$( abs "$max_element" )
+		local try_act=$( abs "$act_element" )
+
+		max_idx=`awk -v max=$try_max -v act=$try_act -v m_ix=$max_idx -v a_ix=$element 'BEGIN{
+			if (act > max)
+				{printf("%d",a_ix);}
+			else
+				{printf("%d",m_ix);}
+		}'`
+	done
+
+	echo $max_idx
+}
+
+
+# FUNCTION 'exe_pos_mul()'
+# part of the 'pos' command
+# execution process
+# multiplies the values
+# in arrays 'ticker_value[@]'
+# and 'ticker_lst_val[@]'
+# result is saved into 'ticker_value'
+exe_pos_mul(){
+
+	local n=$((${#ticker_value[@]}-1))
+
+        for i in $(seq 0 $n)
+	do
+		ticker_value[$i]=`awk -v amnt=${ticker_value[$i]} -v price=${ticker_lst_val[$i]} 'BEGIN{printf("%.2f",amnt*price);}'`
+	done
+
+}
+
+
+# FUNCTION 'exe_pos_sort()'
+# part of the 'pos' command
+# execution process
+# 
+# using selection sort to
+# sort the arrays 'ticker_value[@]'
+# and 'ticker_mag[@]' by values
+# in 'ticker_value[@]'
+#
+# the function NEEDS the 'ticker_value[@]'
+# array to have floating point values
+# with exactly 2 decimal points
+# other scenatious may result is undefined
+# and may cause an error
+exe_pos_sort(){
+	
+	local n=$((${#ticker_value[@]}-1))
+	local m=$((n-1))
+
+	for i in $(seq 0 $n)
+	do
+		ticker_value[$i]=`echo ${ticker_value[$i]} | sed 's/\.//'`
+	done
+
+	for i in $(seq 0 $m)
+	do
+		local max_idx=$i
+		local strt=$((i+1))
+
+		for j in $(seq $strt $n)
+		do
+			if [ ${ticker_value[$j]} -gt ${ticker_value[$max_idx]} ]
+			then
+				max_idx=$j
+			fi
+		done
+
+		local hlp1=${ticker_value[$max_idx]}
+		local hlp2=${ticker_mag[$max_idx]}
+
+		ticker_value[$max_idx]=${ticker_value[$i]}
+		ticker_mag[$max_idx]=${ticker_mag[$i]}
+
+		ticker_value[$i]=$hlp1
+                ticker_mag[$i]=$hlp2
+	done
+
+	for i in $(seq 0 $n)
+	do
+		ticker_value[$i]=`awk -v value=${ticker_value[$i]} 'BEGIN{printf("%.2f",value/100);}'`
+	done
+	
+}
+
+
+# FUNCTION 'exe_sort_alpha()'
+# sorts the 'ticker_mag' array
+# alphabeticaly
+# then sorts the 'ticker_value' and
+# 'ticker_lst_val' array by comparing
+# the original index of the 'ticker_mag'
+# array with the current index
+exe_sort_alpha(){
+
+	local sted_ticker_mag=()
+	local sted_ticker_value=()
+	local sted_icker_lst_val=()
+
+	sted_ticker_mag=($(for tck in "${ticker_mag[@]}"; do echo $tck; done | sort ))
+
+	local go=$((${#sted_ticker_mag[@]}-1))
+
+	for i in $(seq 0 $go)
+	do
+		local prev_pos=$( find_in_array "${ticker_mag[@]}" "${sted_ticker_mag[$i]}" )
+		sted_ticker_value+=(${ticker_value[$prev_pos]})
+		sted_ticker_lst_val+=(${ticker_lst_val[$prev_pos]})
+	done
+
+	for i in $(seq 0 $go)
+	do
+		ticker_mag[$i]=${sted_ticker_mag[$i]}
+		ticker_value[$i]=${sted_ticker_value[$i]}
+		ticker_lst_val[$i]=${sted_ticker_lst_val[$i]}
+	done
+}
+
+
+# FUNCTION 'exe_list-tick()'
+# executes the function 'list-tick'
+# by inserting a new ticker to the
+# ticker buffer, if it isn't already
+# there then it is skipped
+exe_list_tick(){
+
+	local mag="$@"
+
+	declare -a tick_list=($mag)
+	local tick=${tick_list[${#tick_list[@]}-1]}
+
+	tick_list[${#tick_list[@]}-1]=0
+	
+	local ctrol=0
+	for ticker in ${tick_list[@]}
+	do
+
+		if [ $ticker == $tick ]
+		then
+			ctrol=$((ctrol+1))
+			continue
+		fi
+
+	done
+
+	if [ $ctrol -eq 0 ]
+	then
+		ticker_list+=($tick)
+		echo ${ticker_list[@]}
+	fi
+
+}
+
+
+# FUNCTION 'print_pos()'
+# final part of the 'pos', 'last-price'
+# commands execution process
+#
+# prints the output of
+# said functions
+# by the convention
+
+#	|TCKER     : VALUE.XX
+print_pos(){
+
+	local tcker=$1
+	local space_amnt=$2
+	local value=$3
+
+	local spc_cnt=10
+	local lngth=${#tcker}
+
+	local diff=$((spc_cnt-lngth-1))
+
+	local space_one=' '
+	local space=''
+	local space_tck=''
+	for x in $( seq 0 $space_amnt )
+	do
+		space="$space$space_one"
+	done
+
+	for y in $( seq 0 $diff )
+	do
+		space_tck="$space_tck$space_one"
+	done
+
+	echo -e "$tcker$space_tck:$space$value"
+
+}
+
+
+# FUNCTION 'draw_graph()'
+# draws graphs using the
+# arrays 'ticker_mag' and 
+# 'ticker_value'
+draw_graph(){
+
+        local spc_cnt=10
+	local cycles=$((${#ticker_mag[@]}-1))
+	for i in $(seq 0 $cycles)
+	do
+		local lngth=${#ticker_mag[$i]}
+		local diff=$(( spc_cnt - lngth - 1 ))
+
+		local space_one=' '
+		local space=''
+		local space_tck=''
+
+		for x in $( seq 0 $diff )
+		do
+			space_tck="$space_tck$space_one"
+		done
+
+		local sign='#'
+		local graph=''
+
+		if [ ${ticker_value[$i]} -lt 0 ]
+		then
+			ticker_value[$i]=$( abs "${ticker_value[$i]}" )
+			sign='!'
+		fi
+
+		for t in $( seq 1 ${ticker_value[$i]} )
+		do
+			space=' '
+			graph="$graph$sign"
+		done
+
+		echo -e "${ticker_mag[$i]}$space_tck:$space$graph"
+	done
+
+}
+
+
+# FUNCTION 'rep_pos()'
+# repeats the necessary
+# operation for the successful
+# execution of command pos
+## **executes on every line**
+rep_pos(){
+
+	local new_value=0
+	local index_adder=$( find_in_array "${ticker_mag[@]} ${line_prt[$t_tckid]}" )
+
+	if [ $index_adder -eq -1 ]
+	then
+		ticker_amnt+=(0)
+		ticker_lst_val+=(0.00)
+	fi
+
+	ticker_mag+=($(exe_list_tick "${ticker_mag[@]}" "${line_prt[$t_tckid]}"))
+
+	# the function 'find_in_array()' will always return a positive output because
+	# even if the ticker was new, it is added to the mag before its index is
+	# looked for
+	local position=$( find_in_array "${ticker_mag[@]} ${line_prt[$t_tckid]}" )
+
+	ticker_lst_val[$position]=${line_prt[$t_stckval]}
+
+	act_mag_value=${ticker_value[$position]}
+	local amount=${line_prt[$t_stckam]}
+
+	if [ ${line_prt[$t_type]} == "buy" ]
+	then
+		new_value=$(( act_mag_value + amount ))
+	else
+		new_value=$(( act_mag_value - amount ))
+	fi
+
+	ticker_value[$position]=$new_value
+}
+
+
+# FUNCTION 'abs()'
+# returns the absolute value
+# of the argument
+abs(){
+
+	local out_value=`awk -v val=$1 'BEGIN{
+		if (val < 0)
+			{val = val * -1;}
+		printf("%.2f",val);
+	}'`
+
+	echo $out_value
+}
+
+
+# FUNCTION 'check_line_date_time()'
+# as the name suggests, checks
+# the date and time on each
+# line whether it is valid
+# or not
+## VALID:
+##	proceed
+## INVALID:
+##	print error
+check_line_date_time(){
+
+	local arr=$( get_date_time "${line_prt[$t_date]}" )
+	declare -a array=($arr)
+	local res=0
+
+	for x in ${arr[@]}
+	do
+		if [[ $x =~ ^[0-9]{4}$ ]] || [[ $x =~ ^[0-1][0-9]$ ]] || [[ $x =~ ^[0-3][0-9]$ ]]
+		then
+			continue
+		elif [[ $x =~ ^[0-2][0-9]$ ]] || [[ $x =~ ^[0-5][0-9]$ ]] || [[ $x =~ ^[0-5][0-9]$ ]]
+		then
+			continue
+		else
+			res=$((res+1))
+		fi
+	done
+
+	if [ $res -gt 0 ]
+	then
+		echo -1
+	else
+		echo 1
+	fi
+
+}
+
+
+# FUNCTION 'filter_check()'
+# checks given [FILTER] parameters
+# for errors
+filter_check(){
+
+	local w_flag=0
+	local count=$((${#filter[@]}-1))
+	for fil in $(seq 0 $count)
+	do
+		case ${filter[$fil]} in
+			-a | -b)
+				if [ $((fil+2)) -le $count ]
+				then
+					if [[ ${filter[$fil+1]} =~ ^[0-9]{4}\-[0-2][0-9]\-[0-3][0-9]$ ]]
+					then
+						if [[ ${filter[$fil+2]} =~ ^[0-2][0-9]\:[0-5][0-9]\:[0-5][0-9]$ ]]
+						then
+							continue
+						fi
+					else
+						echo -e "Wrong parameter '${filter[$fil+1]}${filter[$fil+2]}'\n[FILTER] expects argument DATE TIME - YYYY:MM:DD HH:MM:SS\nTry '-h' or '--help' for more info."
+						exit 3
+					fi
+				else
+					echo -e "ERROR: filter '${filter[$fil]}' parameter missing.\n[FILTER] expects argument DATE TIME\nTry '-h' or '--help' for more info."
+					exit 13
+				fi
+				;;
+	
+			-t)
+				if [ $((fil+1)) -le $count ]
+				then
+					if [[ ! ${filter[$fil+1]} =~ [\ \n\t\r\v\;] ]]
+					then
+						continue
+					else
+						echo -e "Wrong parameter '${filter[$fil+1]}'\n[FILTER] expects argument TICKER\nTry '-h' or '--help' fore more info."
+						exit 4
+					fi
+				else
+					echo -e "ERROR: filter '${filter[$fil]}' parameter missing.\n[FILTER] expects TICKER argument\nTry '-h' or '--help' for more info."
+					exit 14
+				fi
+				;;
+	
+			-w)
+				w_flag=$((w_flag+1))
+
+				if [ $w_flag -gt 1 ]
+				then
+					echo "ERROR: Only one instance of '-w' permitted."
+					exit 15
+				fi
+
+				if [ $((fil+1)) -le $count ]
+				then
+					if [[ ${filter[$fil+1]} =~ ^[1-9][0-9]*$ ]]
+					then
+						continue
+					else
+						echo -e "Wrong parameter '${filter[$fil+1]}'\n[FILTER] expects an integer argument greater than zero\nTry '-h' or '--help' fore more info."
+						exit 5
+					fi
+				else
+					echo -e "ERROR: filter '${filter[$fil]}' parameter missing.\n[FILTER] expects INTEGER argument\nTry '-h' or '--help' for more info."
+                                        exit 16
+				fi
+				;;
+		esac
+	done
+}
+
+
+# FUNCTION 'line_check()'
+# checks, whether all parts
+# of the LINE are valid
+## ---------------------
+## DATE and TIME  ok/nok
+##    TICKER      ok/nok
+##  TRANSACTION   ok/nok
+##    PRICE       ok/nok
+##   CURRENCY     ok/nok
+##    AMOUNT      ok/nok
+##      ID        ok/nok
+##
+# checked by REGEX
+line_check(){
+
+	if [ ${#line_prt[@]} -gt $t_max ]
+	then
+		echo -e "ERROR: Too many divider characters ';'\nType -h or --help for more info."
+		exit 18
+	fi
+
+	# DATE & TIME
+	local res1=$(check_line_date_time)
+	if [ $res1 -eq -1 ]
+	then
+		echo -e "Wrong line DATE or TIME '${line_prt[$t_date]}'.\nExpected format YYYY-MM-DD HH:MM:SS."
+		exit 6
+	fi
+
+	# TICKER
+	if [[ ${line_prt[$t_tckid]} =~ [\ \n\t\r\v\;] ]]
+	then
+		echo -e "Wrong line TICKER '${line_prt[$t_tckid]}'.\nExpected format TICKER."
+		exit 7
+	fi
+
+	# TRANSACTION
+	if [ ${line_prt[$t_type]} != "buy" ] && [ ${line_prt[$t_type]} != "sell" ]
+	then
+		echo -e "Wrong line TRANSACTION TYPE '${line_prt[$t_type]}'.\nExpected 'buy' or 'sell'."
+		exit 9
+	fi
+
+	# PRICE (VALUE)
+	if [[ ${line_prt[$t_stckval]} =~ ^[0-9]+\.[0-9]{2}.+$ ]]
+	then
+		echo -e "Wrong line STOCK VALUE '${line_prt[$t_stckval]}'.\nExpected format 'x---x.xx' -  numbers 'dot' & maximum of two decimal points'."
+		exit 10
+	fi
+
+	# CURRENCY
+	if [[ ! ${line_prt[$t_curcy]} =~ ^[A-Z]{3}$ ]]
+	then
+		echo -e "Wrong line CURRENCY '${line_prt[$t_currcy]}'.\nExpected format CURRENCY."
+		exit 11
+	fi
+
+	# AMOUNT
+	if [[ ! ${line_prt[$t_stckam]} =~ ^[0-9]+$ ]]
+	then
+		echo -e "Wrong line STOCK AMOUNT '${line_prt[$t_stckam]}'.\nExpected an integer."
+		exit 12
+	fi
+
+	# ID
+	if [[ ${line_prt[$t_id]} =~ [\ \n\t\r\v] ]]
+	then
+		echo -e "Wrong line ID '${line_prt[$t_id]}'\nUnexpected whitespace character"
+		exit 17
+	fi
+}
+
+
+
+
+## _________________________
+## **THE NEXT CODE SEGMENT**
+## -------------------------
+
+
+## USED VARIABLES [INFO]:
+## inicialized way down \/ 
+#
+#	ticker_mag=()
+#	ticker_value=()
+#	ticker_amnt=()
+#	ticker_lst_val=()
+#	end_money=0
+#	width=1000
+#
+
+# *LINE PART CONSTANTS*
+#     *line_prt[x]*
+#
+	t_date=0
+	t_tckid=1
+	t_type=2
+	t_stckval=3
+	t_curcy=4
+	t_stckam=5
+	t_id=6
+# - - - - - - - - - - -
+	t_max=7
+#- - - - - - - - - - - 
+# _____________________
+
+
+line_exec(){
+
+	local old_IFS="$IFS"
+	IFS=';'
+	declare -a line_prt=($line)
+	IFS="$old_IFS"
+
+	line_check
+		
+	local execute=()
+	local fter_pos=0
+
+	# Executes filters present in 'filter' variable
+	# when a filter is selected and LINE part matches
+	# the FILTER parameter, a '1' is added to 'execute' array
+	# after the cycle is complete, the array is evaluated
+	for fter in ${filter[@]}
+	do
+
+		case $fter in 
+			-a | -b)
+
+				local line_date_time=$( get_date_time "${line_prt[$t_date]}" )
+
+				#echo $line_date_time
+				local in="${filter[$fter_pos+1]} ${filter[$fter_pos+2]}"
+
+				local param_date_time=$( get_date_time "$in" )
+
+				#echo line $line_date_time param $param_date_time
+				local res=$(cmp "$line_date_time $param_date_time")
+				# execute command if '-a' and line is earlier than parameter/argument
+				if [ $fter == "-a" ] && [ $res -eq 1 ]
+				then
+					execute+=(1)
+
+				# execute command if '-b' and line is after parameter/argument
+				elif [ $fter == "-b" ] && [ $res -eq -1 ]
+				then
+					execute+=(1)
+				else
+					execute+=(0)
+				fi
+
+				;;
+			-t)
+				#get_t_params "${filter[@]}"
+				local t_list=$( get_t_params "${filter[@]}" )
+				local old_exe=${#execute[@]}
+
+				for t_param in ${t_list[@]}
+				do
+
+					if [ ${line_prt[$t_tckid]} == $t_param ]
+					then
+						execute+=(1)
+					fi
+				done
+
+				if [ $old_exe -eq ${#execute[@]} ]
+				then
+					execute+=(0)
+				fi
+
+				;;
+			-w)
+				width=${filter[$fter_pos+1]}
+				execute+=(1)
+				;;
+		esac
+		fter_pos=$((fter_pos+1))
+	done
+
+	# 'execute' array is evaluated here
+	# if there is an instance of a ZERO (indicating a failed filter test)
+	# the COMMANDs will not execute
+	# the array has to be filled only
+	# with '1's
+	local pass=0
+	for exe in ${execute[@]}
+	do
+		if [ $exe -eq 1 ]
+		then
+			pass=$((pass+1))
+		fi
+	done
+
+	# The COMMANDs are executed here each cycle, on each line ...
+	if [ $pass -eq ${#execute[@]} ]
+	then
+		case $comm in
+			list-tick)
+
+				ticker_mag+=($(exe_list_tick "${ticker_mag[@]}" "${line_prt[$t_tckid]}"))
+
+				;;
+			profit)
+
+				local temp=`awk -v val=${line_prt[$t_stckval]} -v amnt=${line_prt[$t_stckam]} 'BEGIN{
+					result = val * amnt;
+					printf("%.2f",result);
+				}'`
+
+				if [ ${line_prt[$t_type]} == "buy" ]
+				then
+					end_money=`awk -v end_m=$end_money -v tmp=$temp 'BEGIN{printf("%.2f",end_m-tmp);}'`
+				else
+					end_money=`awk -v end_m=$end_money -v tmp=$temp 'BEGIN{printf("%.2f",end_m+tmp);}'`
+				fi
+
+				;;
+			pos | graph-pos)
+
+				rep_pos
+
+				;;
+			last-price)
+
+				local index_adder=$( find_in_array "${ticker_mag[@]} ${line_prt[$t_tckid]}" )
+
+				if [ $index_adder -eq -1 ]
+					then
+					ticker_lst_val+=(0.00)
+				fi
+
+				ticker_mag+=($(exe_list_tick "${ticker_mag[@]}" "${line_prt[$t_tckid]}"))
+
+				local position=$( find_in_array "${ticker_mag[@]} ${line_prt[$t_tckid]}" )
+
+				ticker_lst_val[$position]=${line_prt[$t_stckval]}
+
+				;;
+			hist-ord)
+
+				local index_adder=$( find_in_array "${ticker_mag[@]} ${line_prt[$t_tckid]}" )
+
+				if [ $index_adder -eq -1 ]
+				then
+					ticker_value+=(0)
+				fi
+				ticker_mag+=($(exe_list_tick "${ticker_mag[@]}" "${line_prt[$t_tckid]}"))
+
+				local position=$( find_in_array "${ticker_mag[@]} ${line_prt[$t_tckid]}" )
+				ticker_value[$position]=$(( ${ticker_value[$position]} + 1 ))
+
+				;;
+			*)
+				echo $line
+				;;
+		esac
+	fi
+
+}
+
+#-------------------------------------------------------
+##                **NEXT MAIN SEGMENT**
+#-------------------------------------------------------
+
+ticker_mag=()
+ticker_value=()
+ticker_amnt=()
+ticker_lst_val=()
+line_prt=()
+end_money=0.00
+width=1000
+
+
+filter_check
+
+lgfls=${logfiles[@]}
+line_counter=0
+
+# For each *LOG_FILE*
+# Reads from said LOG_FILE line by line and executes COMMAND
+#
+# If no LOG_FILE is entered, input from STDIN is expected
+# Then if entered line EMPTY
+# 	COMMAND \/ is executed
+if [ ${#lgfls} -eq 0 ]
+then
+        while true
+        do
+                read line
+		line_counter=$((line_counter + 1))
+		if [ ${#line} -eq 0 ]
+		then
+				break
+		fi
+                line_exec
+        done
+else
+        for log_file in "${logfiles[@]}"
+        do
+                while read line
+                do
+                        line_exec
+		done <<< "$(zcat -f $log_file)"
+        done
+fi
+
+
+
+# After the end of all *LOG_FILES* this segment
+# finalizes the COMMAND's execution
+# formatting output and such ...
+case $comm in
+	list-tick)
+		
+		sted_ticker_mag=($( for tck in "${ticker_mag[@]}"; do echo $tck; done | sort ))
+		for tcker in ${sted_ticker_mag[@]}
+		do
+			echo $tcker
+		done
+
+		;;
+	profit)
+		echo $end_money
+		;;
+	pos)
+
+		ticker_value_final=()
+
+		exe_pos_mul
+		exe_pos_sort
+
+		end=$((${#ticker_value[@]}-1))
+		max_len=$( max_len "${ticker_value[@]}" )
+
+		for value in $(seq 0 $end)
+		do
+			curr_val=${ticker_value[$value]}
+			curr_len=${#curr_val}
+
+			diff=$(( max_len - curr_len ))
+
+			print_pos "${ticker_mag[$value]}" "$diff" "${ticker_value[$value]}"
+		done
+
+		;;
+	last-price)
+
+		sted_ticker_mag=($( for tck in "${ticker_mag[@]}"; do echo $tck; done | sort ))
+
+		end=$((${#ticker_mag[@]}-1))
+		max_len=$( max_len "${ticker_lst_val[@]}" )
+
+		for value in $(seq 0 $end)
+		do
+
+			position=$( find_in_array "${ticker_mag[@]}" "${sted_ticker_mag[$value]}" )
+
+			curr_val=${ticker_lst_val[$position]}
+			curr_len=${#curr_val}
+
+			diff=$((max_len - curr_len))
+
+			print_pos "${sted_ticker_mag[$value]}" "$diff" "${ticker_lst_val[$position]}"
+		done
+
+		;;
+	hist-ord)
+		idx=$( max_len_idx "${ticker_value[@]}" )
+		
+		unit_count=`awk -v value=${ticker_value[$idx]} -v width=$width 'BEGIN{
+			result = value/width;
+			if((width != 1000) && (result != 0))
+				{printf("%.17g",result);}
+			else
+				{printf("1")}
+		}'`
+
+		end=$((${#ticker_value[@]}-1))
+
+		for value in $(seq 0 $end)
+		do
+			ticker_value[$value]=`awk -v t_val=${ticker_value[$value]} -v unit=$unit_count 'BEGIN{
+				result = t_val / unit;
+				printf("%d",result);
+			}'`
+		done
+
+		exe_sort_alpha
+		draw_graph
+
+		;;
+	graph-pos)
+
+		exe_pos_mul
+
+		end=$((${#ticker_value[@]}-1))
+
+		idx=$( max_len_idx "${ticker_value[@]}" )
+
+		unit_price=`awk -v value=${ticker_value[$idx]} -v width=$width 'BEGIN{
+			result = value / width;
+			if (result < 0)
+				{result = result * -1}
+			printf("%.30g",result);
+		}'`
+
+		for value in $(seq 0 $end)
+		do
+			ticker_value[$value]=`awk -v t_val=${ticker_value[$value]} -v unit=$unit_price 'BEGIN{
+				result = t_val / unit;
+				printf("%d",result);
+			}'`
+		done
+
+		exe_sort_alpha
+		draw_graph
+		;;
+esac
+
+# ---------- **END OF CODE** ----------
